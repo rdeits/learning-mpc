@@ -21,20 +21,25 @@ struct Params{T, D <: AbstractVector{T}, M<:AbstractMatrix{T}, V<:AbstractVector
     data::D
     weights::Vector{M}
     biases::Vector{V}
+    bypasses::Vector{M}
     shapes::Vector{NTuple{2, Int}}
 
-    Params{T, D, M, V}(data::D, weights::Vector{M}, biases::Vector{V}) where {T, D, M, V} =
-        new{T, D, M, V}(data, weights, biases, size.(weights))
+    Params{T, D, M, V}(data::D, weights::Vector{M}, biases::Vector{V}, bypasses::Vector{M}) where {T, D, M, V} =
+        new{T, D, M, V}(data, weights, biases, bypasses, size.(weights))
 end
 
 Params{T, D<:AbstractVector{T}, M<:AbstractMatrix{T}, V<:AbstractVector{T}}(
-    data::D, weights::Vector{M}, biases::Vector{V}) =
-    Params{T, D, M, V}(data, weights, biases)
+    data::D, weights::Vector{M}, biases::Vector{V}, bypasses::Vector{M}) =
+    Params{T, D, M, V}(data, weights, biases, bypasses)
 
 function Params(shapes::Vector{<:NTuple}, data::AbstractVector)
     weights = viewblocks(data, shapes)
-    biases = viewblocks(@view(data[(nweights(shapes) + 1):end]), head.(shapes))
-    Params(data, weights, biases)
+    i = nweights(shapes)
+    biases = viewblocks(@view(data[i + (1:nbiases(shapes))]), head.(shapes))
+    i += nbiases(shapes)
+    bypasses = viewblocks(@view(data[i + (1:nbypasses(shapes))]), bypass_shapes(shapes))
+
+    Params(data, weights, biases, bypasses)
 end
 
 Params(widths::AbstractVector{<:Integer}, data::AbstractVector) =
@@ -46,7 +51,9 @@ shapes(p::Params) = p.shapes
 nparams(widths::AbstractVector{<:Integer}) = nparams(collect(zip(widths[2:end], widths[1:end-1])))
 nweights(shapes::AbstractVector{<:NTuple{2, Integer}}) = sum(prod, shapes)
 nbiases(shapes::AbstractVector{<:NTuple{2, Integer}}) = sum(first, shapes)
-nparams(shapes::AbstractVector{<:NTuple{2, Integer}}) = nweights(shapes) + nbiases(shapes)
+nparams(shapes::AbstractVector{<:NTuple{2, Integer}}) = nweights(shapes) + nbiases(shapes) + nbypasses(shapes)
+bypass_shapes(shapes::AbstractVector{<:NTuple{2, Integer}}) = [(s[1], shapes[1][2]) for s in shapes]
+nbypasses(shapes::AbstractVector{<:NTuple{2, Integer}}) = sum(prod, bypass_shapes(shapes))
 
 Base.zeros(::Type{Params{T}}, widths::AbstractVector{<:Integer}) where {T} =
     Params(widths, zeros(T, nparams(widths))) 
@@ -70,7 +77,7 @@ nweights(net::Net) = nweights(net.params)
 nbiases(net::Net) = nbiases(net.params)
 nparams(net::Net) = nparams(net.params)
 ninputs(net::Net) = ninputs(net.params)
-noutput(net::Net) = noutputs(net.params)
+noutputs(net::Net) = noutputs(net.params)
 params(net::Net) = net.params
 (net::Net)(x) = predict(net, x)
 
@@ -85,25 +92,27 @@ Base.similar(net::Net, data::AbstractVector) =
 @ReverseDiff.forward leaky_relu(y) = y >= 0 ? y : 0.1 * y
 @ReverseDiff.forward leaky_relu_sensitivity(y, j) = y >= 0 ? j : 0.1 * j
 
-function predict(net::Net, x::AbstractVector)
+function predict(net::Net, x_::AbstractVector)
+    x = net.input_tform(x_)
     params = net.params
-    y = params.weights[1] * net.input_tform(x) + params.biases[1]
+    y = params.weights[1] * x + params.biases[1] + params.bypasses[1] * x
     for i in 2:length(params.weights)
         y = leaky_relu.(y)
-        y = params.weights[i] * y + params.biases[i]
+        y = params.weights[i] * y + params.biases[i] + params.bypasses[i] * x
     end
     net.output_tform(y)
 end
 
-function predict_sensitivity(net::Net, x::AbstractVector)
+function predict_sensitivity(net::Net, x_::AbstractVector)
+    x = net.input_tform(x_)
     params = net.params
-    y = params.weights[1] * net.input_tform(x) + params.biases[1]
-    J = params.weights[1] * transform_deriv(net.input_tform, x)
+    y = params.weights[1] * x + params.biases[1] + params.bypasses[1] * x
+    J = params.weights[1] * transform_deriv(net.input_tform, x) + params.bypasses[1]
     for i in 2:length(params.weights)
         y = leaky_relu.(y)
         J = leaky_relu_sensitivity.(y, J)
-        y = params.weights[i] * y + params.biases[i]
-        J = params.weights[i] * J
+        y = params.weights[i] * y + params.biases[i] + params.bypasses[i] * x
+        J = params.weights[i] * J + params.bypasses[i]
     end
     hcat(net.output_tform(y), transform_deriv(net.output_tform, y) * J)
 end
