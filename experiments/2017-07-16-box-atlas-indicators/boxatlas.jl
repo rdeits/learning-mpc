@@ -65,9 +65,10 @@ struct State{T}
     position::Dict{Body, SVector{2, T}}
     velocity::Dict{Body, SVector{2, T}}
     angular_velocity::Dict{Body, T}
+    shadow_position::Dict{Body, T}
 end
 
-const STATE_LENGTH = 21
+const STATE_LENGTH = 25
 
 convert(::Type{State}, x::AbstractVector{T}) where {T} = convert(State{T}, x)
 
@@ -88,7 +89,13 @@ function convert(::Type{State{T}}, x::AbstractVector) where {T}
             LeftHand => x[17:18],
             RightHand => x[19:20]
             ),
-        Dict(Trunk=>x[21])
+        Dict(Trunk=>x[21]),
+        Dict(
+            LeftFoot => x[22],
+            RightFoot => x[23],
+            LeftHand => x[24],
+            RightHand => x[25]
+        )
         )
 end
 
@@ -101,13 +108,15 @@ function Base.similar(x::State{T}, ::Type{T2}=T) where {T, T2}
     for (k, v) in x.velocity
         velocity[k] = zeros(SVector{2, T2})
     end
-    State(position, velocity, Dict(Trunk=>zero(T2)))
+    shadow_position = Dict([b=>zero(T) for b in [LeftFoot, RightFoot, LeftHand, RightHand]])
+    State(position, velocity, Dict(Trunk=>zero(T2)), shadow_position)
 end
 
 JuMP.getvalue(s::State) = State(
-    Dict([(body, getvalue.(p)) for (body, p) in s.position]),
-    Dict([(body, getvalue.(p)) for (body, p) in s.velocity]),
-    Dict(Trunk=>getvalue(s.angular_velocity[Trunk])))
+    Dict([body=>getvalue.(p) for (body, p) in s.position]),
+    Dict([body=>getvalue.(p) for (body, p) in s.velocity]),
+    Dict(Trunk=>getvalue(s.angular_velocity[Trunk])),
+    Dict([body=>getvalue(p) for (body, p) in s.shadow_position]))
 
 vec(s::State) = convert(Array, vcat(
     s.position[Trunk],
@@ -120,7 +129,12 @@ vec(s::State) = convert(Array, vcat(
     s.velocity[RightFoot],
     s.velocity[LeftHand],
     s.velocity[RightHand],
-    s.angular_velocity[Trunk]))
+    s.angular_velocity[Trunk],
+    s.shadow_position[LeftFoot],
+    s.shadow_position[RightFoot],
+    s.shadow_position[LeftHand],
+    s.shadow_position[RightHand]
+    ))
 
 struct Input{T}
     force::Dict{Body, SVector{2, T}}
